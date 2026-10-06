@@ -61,3 +61,37 @@ sandbox o máquina de laboratorio.
 |    localhost:8080     |
 +-----------------------+
 
+-------------------------------
+
+
+             ┌───────────────────┐
+             │     Simulator     │
+             └─────────┬─────────┘
+                       │
+                       ▼
+              Creates dummy files
+                       │
+                       ▼
+              Fake "encrypting"
+                       │
+                       ▼
+             NO REAL ENCRYPTION
+                       │
+                       ▼
+                localhost:8080
+                       │
+                       ▼
+                RSA CTF challenge
+                       │
+                       ▼
+                8-hour countdown
+                       │
+                       ▼
+                 Enter RSA key
+                       │
+              ┌────────┴────────┐
+              │                 │
+           Correct           Incorrect
+              │                 │
+              ▼                 ▼
+          UNLOCKED         Continue CTF
