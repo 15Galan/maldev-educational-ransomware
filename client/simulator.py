@@ -1,325 +1,412 @@
+import base64
+import getpass
+import json
 import os
+import shutil
+import socket
 import sys
 import time
-import json
-import requests
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import timedelta
+
+import requests
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-SERVER_URL = os.environ.get(
-    "TRAINING_SERVER",
-    "http://127.0.0.1:5000"
-)
+SERVER_URL = "http://127.0.0.1:8080"
 
-COUNTDOWN_SECONDS = 8 * 60 * 60
+BASE_DIR = Path(__file__).resolve().parent.parent
+LAB_SOURCE = BASE_DIR / "lab_files"
+LAB_DIR = BASE_DIR / "RansomwareTrainingLab"
 
-LAB_DIRECTORY = (
-    Path.home()
-    / "Desktop"
-    / "Ransomware-Training-Lab"
-)
+CLIENT_LOG = LAB_DIR / "client.log"
+METADATA_FILE = LAB_DIR / "challenge.json"
 
-
-def banner():
-    os.system("cls" if os.name == "nt" else "clear")
-
-    print("=" * 70)
-    print("                 RANSOMWARE TRAINING")
-    print("=" * 70)
-    print()
-    print("             *** SIMULATION ONLY ***")
-    print()
-    print("This program does NOT encrypt real files.")
-    print("This program does NOT delete real files.")
-    print()
-    print("=" * 70)
-    print()
+ALLOWED_FILES = {
+    "training.txt",
+    "training.pdf",
+    "training.jpg",
+    "training.docx"
+}
 
 
-def create_lab_files():
-    LAB_DIRECTORY.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+def log(message):
+    LAB_DIR.mkdir(exist_ok=True)
 
-    files = {
-        "training_document.txt":
-            "This is a harmless ransomware-training document.\n",
+    timestamp = datetime.now(timezone.utc).isoformat()
 
-        "training_document.pdf":
-            "SIMULATED PDF CONTENT - TRAINING ONLY\n",
+    line = f"{timestamp} | {message}"
 
-        "training_photo.jpg":
-            "SIMULATED JPG CONTENT - TRAINING ONLY\n",
+    print(line)
 
-        "training_document.docx":
-            "SIMULATED DOCX CONTENT - TRAINING ONLY\n"
-    }
-
-    for filename, content in files.items():
-        path = LAB_DIRECTORY / filename
-
-        if not path.exists():
-            path.write_text(
-                content,
-                encoding="utf-8"
-            )
+    with open(CLIENT_LOG, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 
-def simulate_encryption():
-    print("[*] Starting simulated encryption...")
-    print()
-
-    files = list(LAB_DIRECTORY.iterdir())
-
-    for path in files:
-
-        if not path.is_file():
-            continue
-
-        print(
-            f"[SIMULATION] Encrypting: "
-            f"{path.name}"
-        )
-
-        time.sleep(1)
-
-    print()
-    print("[!] Simulation completed.")
-    print()
-    print(
-        "No actual encryption was performed."
-    )
-
-
-def get_challenge():
+def server_event(event, **data):
     try:
-        response = requests.get(
-            f"{SERVER_URL}/challenge",
-            timeout=5
-        )
-
-        response.raise_for_status()
-
-        return response.json()
-
-    except requests.RequestException as exc:
-
-        print()
-        print("[!] Unable to contact training server.")
-        print(f"[!] Error: {exc}")
-        print()
-
-        return None
-
-
-def validate_token(token):
-    try:
-
-        response = requests.post(
-            f"{SERVER_URL}/validate",
+        requests.post(
+            f"{SERVER_URL}/event",
             json={
-                "token": token
+                "event": event,
+                **data
             },
             timeout=5
         )
-
-        return response.status_code == 200
-
     except requests.RequestException:
+        pass
+
+
+def check_server():
+    response = requests.get(
+        f"{SERVER_URL}/health",
+        timeout=5
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+
+def get_challenge():
+    response = requests.get(
+        f"{SERVER_URL}/challenge",
+        timeout=5
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+
+def register():
+    hostname = socket.gethostname()
+    username = getpass.getuser()
+
+    requests.post(
+        f"{SERVER_URL}/register",
+        json={
+            "hostname": hostname,
+            "username": username
+        },
+        timeout=5
+    )
+
+
+def prepare_lab():
+    LAB_DIR.mkdir(exist_ok=True)
+
+    for filename in ALLOWED_FILES:
+
+        source = LAB_SOURCE / filename
+        destination = LAB_DIR / filename
+
+        if not source.exists():
+            raise FileNotFoundError(
+                f"Missing laboratory file: {source}"
+            )
+
+        shutil.copy2(source, destination)
+
+    log("LAB_CREATED")
+
+    server_event(
+        "LAB_CREATED",
+        files=sorted(ALLOWED_FILES)
+    )
+
+
+def load_public_key(pem):
+    return serialization.load_pem_public_key(
+        pem.encode()
+    )
+
+
+def encrypt_lab_files(public_key):
+    # AES-256 key.
+    aes_key = AESGCM.generate_key(bit_length=256)
+
+    nonce = os.urandom(12)
+
+    aes = AESGCM(aes_key)
+
+    encrypted_files = []
+
+    for filename in sorted(ALLOWED_FILES):
+
+        original = LAB_DIR / filename
+
+        # Safety boundary:
+        # never follow paths outside LAB_DIR.
+        if original.parent.resolve() != LAB_DIR.resolve():
+            raise RuntimeError("Unsafe laboratory path")
+
+        plaintext = original.read_bytes()
+
+        ciphertext = aes.encrypt(
+            nonce,
+            plaintext,
+            filename.encode()
+        )
+
+        encrypted_path = LAB_DIR / f"{filename}.enc"
+
+        encrypted_path.write_bytes(
+            ciphertext
+        )
+
+        original.unlink()
+
+        encrypted_files.append(
+            encrypted_path.name
+        )
+
+    # RSA protects the AES key.
+    encrypted_aes_key = public_key.encrypt(
+        aes_key,
+        padding.OAEP(
+            mgf=padding.MGF1(
+                algorithm=hashes.SHA256()
+            ),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+
+    metadata = {
+        "algorithm": "AES-256-GCM",
+        "key_protection": "RSA-OAEP-SHA256",
+        "nonce": base64.b64encode(nonce).decode(),
+        "encrypted_aes_key": base64.b64encode(
+            encrypted_aes_key
+        ).decode(),
+        "files": encrypted_files,
+        "created": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "countdown_hours": 8
+    }
+
+    METADATA_FILE.write_text(
+        json.dumps(
+            metadata,
+            indent=2
+        ),
+        encoding="utf-8"
+    )
+
+    log("AES_KEY_GENERATED")
+    log("FILES_ENCRYPTED")
+
+    server_event(
+        "AES_KEY_GENERATED",
+        algorithm="AES-256-GCM"
+    )
+
+    server_event(
+        "FILES_ENCRYPTED",
+        files=encrypted_files
+    )
+
+    return metadata
+
+
+def countdown():
+    start = datetime.now(timezone.utc)
+    expiry = start + timedelta(hours=8)
+
+    log(
+        f"COUNTDOWN_STARTED | expires={expiry.isoformat()}"
+    )
+
+    server_event(
+        "COUNTDOWN_STARTED",
+        expires=expiry.isoformat()
+    )
+
+    print()
+    print("================================================")
+    print(" TRAINING COUNTDOWN")
+    print("================================================")
+    print(" 8 hours")
+    print()
+    print(" No files outside the training directory")
+    print(" will ever be modified or deleted.")
+    print("================================================")
+    print()
+
+
+def unlock(private_key_pem):
+    try:
+        private_key = serialization.load_pem_private_key(
+            private_key_pem,
+            password=None
+        )
+    except Exception:
+        log("UNLOCK_ATTEMPT | INVALID_RSA_KEY")
+        server_event(
+            "UNLOCK_ATTEMPT",
+            result="INVALID_RSA_KEY"
+        )
+        return False
+
+    metadata = json.loads(
+        METADATA_FILE.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    try:
+        encrypted_aes_key = base64.b64decode(
+            metadata["encrypted_aes_key"]
+        )
+
+        aes_key = private_key.decrypt(
+            encrypted_aes_key,
+            padding.OAEP(
+                mgf=padding.MGF1(
+                    algorithm=hashes.SHA256()
+                ),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        nonce = base64.b64decode(
+            metadata["nonce"]
+        )
+
+        aes = AESGCM(aes_key)
+
+        for encrypted_filename in metadata["files"]:
+
+            encrypted_path = LAB_DIR / encrypted_filename
+
+            original_filename = encrypted_filename[:-4]
+
+            output_path = LAB_DIR / original_filename
+
+            ciphertext = encrypted_path.read_bytes()
+
+            plaintext = aes.decrypt(
+                nonce,
+                ciphertext,
+                original_filename.encode()
+            )
+
+            output_path.write_bytes(
+                plaintext
+            )
+
+            encrypted_path.unlink()
+
+        log("FILES_DECRYPTED")
+
+        server_event(
+            "FILES_DECRYPTED",
+            result="SUCCESS"
+        )
+
+        log("CHALLENGE_COMPLETED")
+
+        server_event(
+            "CHALLENGE_COMPLETED",
+            result="SUCCESS"
+        )
+
+        return True
+
+    except Exception as exc:
+
+        log(
+            f"UNLOCK_ATTEMPT | FAILED | {type(exc).__name__}"
+        )
+
+        server_event(
+            "UNLOCK_ATTEMPT",
+            result="FAILED"
+        )
 
         return False
 
 
-def countdown(seconds):
-    while seconds > 0:
-
-        hours, remainder = divmod(
-            seconds,
-            3600
-        )
-
-        minutes, secs = divmod(
-            remainder,
-            60
-        )
-
-        print(
-            f"\rTIME REMAINING: "
-            f"{hours:02d}:{minutes:02d}:{secs:02d}",
-            end="",
-            flush=True
-        )
-
-        time.sleep(1)
-        seconds -= 1
-
-
-def show_recovery_screen(challenge):
-    print()
-    print("=" * 70)
-    print("                 YOUR FILES ARE LOCKED")
-    print("=" * 70)
-    print()
-    print(
-        "This is a ransomware-response training exercise."
-    )
-    print()
-    print(
-        "Your objective is to obtain the recovery token"
-    )
-    print(
-        "from the training infrastructure."
-    )
-    print()
-    print(
-        "The exercise timeout is 8 hours."
-    )
-    print()
-    print("=" * 70)
-    print()
-
-    public_key = challenge.get(
-        "public_key",
-        {}
-    )
-
-    print("[RSA PUBLIC KEY]")
-    print()
-    print(
-        f"n = {public_key.get('n')}"
-    )
-    print(
-        f"e = {public_key.get('e')}"
-    )
-
-    print()
-    print("=" * 70)
-    print()
-
-
 def main():
 
-    banner()
-
-    print(
-        "[*] Preparing isolated training environment..."
-    )
-
-    create_lab_files()
-
-    print(
-        f"[*] Training files created in:"
-    )
-
-    print(
-        f"    {LAB_DIRECTORY}"
-    )
-
+    print()
+    print("==============================================")
+    print(" Educational Ransomware CTF")
+    print(" AES-256 + RSA")
+    print("==============================================")
     print()
 
-    time.sleep(2)
+    try:
+        health = check_server()
 
-    simulate_encryption()
-
-    challenge = get_challenge()
-
-    if challenge is None:
-        input(
-            "Press ENTER to exit..."
-        )
-        return
-
-    show_recovery_screen(
-        challenge
-    )
-
-    print(
-        "Enter the recovery token."
-    )
-
-    print(
-        "For this lab, the default token is:"
-    )
-
-    print(
-        "TRAINING-RANSOM-2026"
-    )
-
-    print()
-
-    start = time.time()
-
-    while True:
-
-        elapsed = int(
-            time.time() - start
+        print(
+            f"[+] Server OK - {health['challenge_id']}"
         )
 
-        remaining = max(
-            0,
-            COUNTDOWN_SECONDS - elapsed
+        challenge = get_challenge()
+
+        public_key = load_public_key(
+            challenge["public_key"]
         )
 
-        if remaining <= 0:
+        register()
 
-            print()
-            print()
-            print(
-                "[!] TRAINING TIMEOUT"
-            )
+        prepare_lab()
 
-            print(
-                "[SIMULATION] "
-                "The training files would now be considered lost."
-            )
+        metadata = encrypt_lab_files(
+            public_key
+        )
 
-            print()
-            break
+        countdown()
 
-        token = input(
-            "Recovery token: "
-        ).strip()
+        print(
+            "[+] Training encryption completed."
+        )
 
-        if validate_token(token):
-
-            print()
-            print("=" * 70)
-            print("                 RECOVERY SUCCESSFUL")
-            print("=" * 70)
-            print()
-            print(
-                "The ransomware incident has been"
-            )
-            print(
-                "successfully resolved."
-            )
-            print()
-            print(
-                "[+] Files remain available because"
-            )
-            print(
-                "    this is a safe simulation."
-            )
-            print()
-            print("=" * 70)
-
-            break
+        print(
+            f"[+] Encrypted files: "
+            f"{len(metadata['files'])}"
+        )
 
         print()
         print(
-            "[!] Invalid recovery token."
+            "The DFIR/SOC analyst must investigate"
         )
         print(
-            "[!] Try again."
+            "the generated artifacts and recover"
         )
-        print()
+        print(
+            "the RSA private key through the CTF."
+        )
 
-    input(
-        "\nPress ENTER to exit..."
-    )
+        print()
+        print(
+            "This program does NOT delete files."
+        )
+
+        return 0
+
+    except requests.RequestException:
+        print(
+            "[!] Training server unavailable."
+        )
+        print(
+            "[!] Start server/server.py first."
+        )
+        return 1
+
+    except Exception as exc:
+        print(
+            f"[!] Error: {type(exc).__name__}: {exc}"
+        )
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
