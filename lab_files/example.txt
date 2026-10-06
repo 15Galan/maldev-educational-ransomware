@@ -1,0 +1,4 @@
+This is a harmless training file.
+
+This file contains no sensitive information.
+It is used exclusively for the educational ransomware simulation.
