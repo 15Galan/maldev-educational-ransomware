@@ -1,3 +1,27 @@
+maldev-educational-ransomware/
+│
+├── client/
+│   ├── simulator.py
+│   └── requirements.txt
+│
+├── server/
+│   ├── server.py
+│   └── requirements.txt
+│
+├── lab_files/
+│   ├── example.txt
+│   ├── example.pdf
+│   ├── example.jpg
+│   └── example.docx
+│
+├── README.md
+├── LICENSE
+└── .gitignore
+
+
+
+
+
 # Educational Ransomware CTF
 
 Laboratorio educativo para entrenamiento de equipos SOC y DFIR.
