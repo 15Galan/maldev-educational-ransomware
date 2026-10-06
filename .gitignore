@@ -1,9 +1,28 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Environment files
+.env
+*.env
+
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
 
-server/keys/
-server/logs/*.jsonl
+# Build files
+build/
+dist/
+*.spec
 
-RansomwareTrainingLab/
+# Logs
+*.log
+logs/
 
-Thumbs.db
+# Local laboratory data
+data/
+tmp/
+
+# IDE
+.vscode/
+.idea/
